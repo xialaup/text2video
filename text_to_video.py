@@ -10,7 +10,7 @@ import subprocess
 import re
 
 from add_text_to_image import add_text_to_image
-from translate import translate_to_english
+from draw_prompt import generate_prompt
 
 
 
@@ -30,15 +30,43 @@ headers = {
     "Authorization": f"Bearer {api_token}",
     "Content-Type": "application/json"
 }
+
+# auto try
 def generateImage(model, prompt):
+    try_count = 0
+    inputs = ""
+    error = ""
+    while try_count < 3 and inputs == "":
+        try:
+            inputs = generate_prompt(prompt)
+        except Exception as e:
+            try_count += 1
+            print("Failed to generate image prompt, retrying", e)
+            error = str(e)
+            continue
+    if inputs == "":
+        raise Exception("Failed to generate image prompt",error)
     body = {
-        "inputs": translate_to_english(prompt)
+        "inputs": inputs
     }
-    if model == "pollinations-ai":
-        r = requests.post("https://image.pollinations.ai/prompt/"+body['inputs'])
-    else:
-        r = requests.post("https://api-inference.huggingface.co/models/" + model,
-                      data=json.dumps(body), headers=headers)
+
+    print("prompt generate image", body)
+
+    def call_model_text_to_image(model, body):
+        if model == "pollinations-ai":
+            r = requests.post("https://image.pollinations.ai/prompt/"+body['inputs'])
+        else:
+            r = requests.post("https://api-inference.huggingface.co/models/" + model,
+                            data=json.dumps(body), headers=headers)
+        return r
+    r = call_model_text_to_image(model, body)
+    try_count = 0
+    while r.status_code != 200 and try_count < 3:
+        r = call_model_text_to_image(model, body)
+        try_count += 1
+
+    if r.status_code != 200:
+        raise Exception("Failed to generate image", r.status_code, r.text)
     # 将图片写入到 images 目录下，每个图片使用(时间戳+model).png 来命名
     timeStamp = str(int(time.time()))
     imagePath = "images/" + timeStamp + \
@@ -83,8 +111,11 @@ def clear_folder(folder_path):
 
 
 def split_sentences(text):
-    pattern = r'[,.，。]'
-    sentences = re.split(pattern, text)
+    text = re.sub('([。！？\?])([^”’])', r"\1\n\2", text)  # 单字符断句符
+    text = re.sub('(\.{6})([^”’])', r"\1\n\2", text)  # 英文省略号
+    text = re.sub('(\…{2})([^”’])', r"\1\n\2", text)  # 中文省略号
+    text = re.sub('([。！？\?][”’])([^，。！？\?])', r'\1\n\2', text)
+    sentences =  text.split("\n")
     # 移除空白的句子
     sentences = [sentence.strip()
                  for sentence in sentences if sentence.strip()]
@@ -95,14 +126,20 @@ def convertTextToVideo(model, text):
     sentences = split_sentences(text)
 
     # 清空 images 文件夹
+    if not os.path.exists("images"):
+        os.makedirs("images")
     clear_folder("images")
     # 清空 voices 文件夹
+    if not os.path.exists("voices"):
+        os.makedirs("voices")
     clear_folder("voices")
 
     # 为每个句子生成图片
     for sentence in sentences:
         if sentence.strip() != "":
+            print("generateImage for sentence" , sentence)
             generateImage(model, sentence.strip())
+            print("generateImage for sentence done" , sentence)
 
     # 合成视频
     frame_width = 640
